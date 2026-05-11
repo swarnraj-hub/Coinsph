@@ -1,0 +1,86 @@
+name: OpenFX Trade History Export
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Start date (YYYY-MM-DD)"
+        required: true
+        type: string
+
+      end_date:
+        description: "End date (YYYY-MM-DD)"
+        required: true
+        type: string
+
+jobs:
+  openfx-export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      OPENFX_EMAIL: ${{ secrets.OPENFX_EMAIL }}
+      OPENFX_PASSWORD: ${{ secrets.OPENFX_PASSWORD }}
+      OPENFX_TOTP_SECRET: ${{ secrets.OPENFX_TOTP_SECRET }}
+
+      OPENFX_START_DATE: ${{ github.event.inputs.start_date }}
+      OPENFX_END_DATE: ${{ github.event.inputs.end_date }}
+
+      OPENFX_HEADLESS: "true"
+
+      OPENFX_SESSION_FILE: "openfx_session.pkl"
+      OPENFX_SCREENSHOT_DIR: "screenshots"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Google Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+
+          pip install \
+            selenium \
+            undetected-chromedriver \
+            pyotp
+
+      - name: Create Screenshot Directory
+        run: mkdir -p screenshots
+
+      - name: Restore Session File
+        run: |
+          if [ -f openfx_session.pkl ]; then
+            echo "Existing session file found"
+          else
+            echo "No existing session file"
+          fi
+
+      - name: Run OpenFX Export
+        run: |
+          xvfb-run --auto-servernum python openfx_download_trade.py \
+            --start "${{ github.event.inputs.start_date }}" \
+            --end "${{ github.event.inputs.end_date }}"
+
+      - name: Upload Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openfx-screenshots
+          path: screenshots/
+          retention-days: 7
+
+      - name: Upload Session File
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openfx-session
+          path: openfx_session.pkl
+          retention-days: 7
