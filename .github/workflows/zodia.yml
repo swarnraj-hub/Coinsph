@@ -1,0 +1,47 @@
+name: Zodia FX Export
+
+on:
+  schedule:
+    - cron: '0 2 * * 1-5'   # 02:00 UTC Mon-Fri (10:00 SGT)
+  workflow_dispatch:
+
+jobs:
+  run-zodia:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright pyotp boto3
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run Zodia automation
+        env:
+          ZODIA_USERNAME:        ${{ secrets.ZODIA_USERNAME }}
+          ZODIA_PASSWORD:        ${{ secrets.ZODIA_PASSWORD }}
+          ZODIA_TOTP_SECRET:     ${{ secrets.ZODIA_TOTP_SECRET }}
+          AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          ZODIA_HEADLESS:        "true"
+        run: python zodia_login.py
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zodia-screenshots
+          path: |
+            login_result.png
+            export_btn_debug.png
+          retention-days: 7
+          if-no-files-found: ignore
