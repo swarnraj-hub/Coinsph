@@ -6,9 +6,8 @@ import struct
 import hashlib
 from datetime import datetime, timedelta
 
-import boto3
-
 from playwright.sync_api import sync_playwright
+import boto3
 
 
 # ─────────────────────────────────────────────
@@ -32,25 +31,6 @@ MAX_ATTEMPTS = 3
 
 
 # ─────────────────────────────────────────────
-# VALIDATION
-# ─────────────────────────────────────────────
-
-required = [
-    "COINSPH_EMAIL",
-    "COINSPH_PASSWORD",
-    "COINSPH_TOTP_SECRET",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "S3_BUCKET",
-]
-
-missing = [x for x in required if not os.getenv(x)]
-
-if missing:
-    raise RuntimeError(f"Missing env vars: {missing}")
-
-
-# ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
 
@@ -58,23 +38,29 @@ def ensure_artifacts():
     os.makedirs("artifacts", exist_ok=True)
 
 
-def save_screenshot(page, name):
+def save_debug(page, name):
+    ensure_artifacts()
+
+    ts = int(time.time())
+
+    png = f"artifacts/{name}_{ts}.png"
+    html = f"artifacts/{name}_{ts}.html"
+
     try:
-        ensure_artifacts()
-
-        path = f"artifacts/{name}_{int(time.time())}.png"
-
-        page.screenshot(path=path, full_page=True)
-
-        print(f"[*] Screenshot: {path}")
-
+        page.screenshot(path=png, full_page=True)
+        print(f"[*] Screenshot: {png}")
     except Exception as e:
         print(f"[!] Screenshot failed: {e}")
 
+    try:
+        with open(html, "w", encoding="utf-8") as f:
+            f.write(page.content())
+        print(f"[*] HTML saved: {html}")
+    except Exception as e:
+        print(f"[!] HTML save failed: {e}")
+
 
 def get_totp(secret):
-    secret = secret.strip().replace(" ", "")
-
     pad = len(secret) % 8
 
     if pad:
@@ -96,8 +82,13 @@ def get_totp(secret):
     return f"{code:06d}"
 
 
-def upload_to_s3(local_file, s3_key):
-    print(f"[*] Uploading to s3://{S3_BUCKET}/{s3_key}")
+# ─────────────────────────────────────────────
+# S3
+# ─────────────────────────────────────────────
+
+def upload_to_s3(local_path, s3_key):
+
+    print(f"[*] Uploading -> s3://{S3_BUCKET}/{s3_key}")
 
     client = boto3.client(
         "s3",
@@ -106,9 +97,39 @@ def upload_to_s3(local_file, s3_key):
         region_name=AWS_REGION,
     )
 
-    client.upload_file(local_file, S3_BUCKET, s3_key)
+    client.upload_file(local_path, S3_BUCKET, s3_key)
 
-    print("[✓] S3 upload complete")
+    print("[✓] Upload completed")
+
+
+# ─────────────────────────────────────────────
+# WAIT HELPERS
+# ─────────────────────────────────────────────
+
+def wait_for_password(page):
+
+    selectors = [
+        "input[type='password']",
+        "input[name='password']",
+        "input[placeholder*='Password']",
+    ]
+
+    for _ in range(30):
+
+        for sel in selectors:
+            try:
+                el = page.locator(sel).first
+
+                if el.is_visible():
+                    print(f"[✓] Password field found: {sel}")
+                    return el
+
+            except Exception:
+                pass
+
+        page.wait_for_timeout(1000)
+
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -116,6 +137,7 @@ def upload_to_s3(local_file, s3_key):
 # ─────────────────────────────────────────────
 
 def login(page):
+
     print("[*] Opening login page")
 
     page.goto(
@@ -124,37 +146,14 @@ def login(page):
         timeout=120000,
     )
 
-    page.wait_for_timeout(10000)
+    page.wait_for_timeout(5000)
 
-    save_screenshot(page, "login_page")
+    save_debug(page, "login_page")
 
     print(f"[*] Current URL: {page.url}")
 
-    content = page.content().lower()
+    # EMAIL TAB
 
-    if "just a moment" in content:
-        print("[!] Cloudflare detected")
-        page.wait_for_timeout(20000)
-
-    popup_selectors = [
-        "button:has-text('Accept')",
-        "button:has-text('Allow')",
-        "button:has-text('Close')",
-        "[aria-label='Close']",
-    ]
-
-    for sel in popup_selectors:
-        try:
-            btn = page.locator(sel).first
-
-            if btn.is_visible():
-                btn.click(timeout=2000)
-                print(f"[*] Closed popup: {sel}")
-
-        except:
-            pass
-
-    # Email tab
     for sel in [
         "button:has-text('Email')",
         "a:has-text('Email')",
@@ -164,27 +163,24 @@ def login(page):
             page.locator(sel).first.click(timeout=5000)
             print("[✓] Email tab selected")
             break
-        except:
-            pass
+        except Exception:
+            continue
 
     page.wait_for_timeout(3000)
 
-    email_selectors = [
-        "input[type='email']",
-        "input[name='email']",
-        "input[placeholder*='Email']",
-        "input[placeholder*='email']",
-        "input[type='text']",
-    ]
+    # EMAIL FIELD
 
     email_ok = False
 
-    # Main page
-    for sel in email_selectors:
+    for sel in [
+        "input[type='email']",
+        "input[name='email']",
+        "input[type='text']",
+    ]:
         try:
             el = page.locator(sel).first
 
-            el.wait_for(state="visible", timeout=15000)
+            el.wait_for(state="visible", timeout=10000)
 
             el.click()
 
@@ -196,87 +192,78 @@ def login(page):
 
             break
 
-        except:
+        except Exception:
             continue
 
-    # iframe fallback
     if not email_ok:
-
-        print("[*] Trying iframe search")
-
-        for frame in page.frames:
-
-            for sel in email_selectors:
-
-                try:
-                    el = frame.locator(sel).first
-
-                    el.wait_for(state="visible", timeout=5000)
-
-                    el.fill(EMAIL)
-
-                    print(f"[✓] iframe email success: {sel}")
-
-                    email_ok = True
-
-                    break
-
-                except:
-                    continue
-
-            if email_ok:
-                break
-
-    if not email_ok:
-        save_screenshot(page, "email_not_found")
+        save_debug(page, "email_not_found")
         raise RuntimeError("Email field not found")
 
-    page.keyboard.press("Enter")
+    page.wait_for_timeout(2000)
 
-    page.wait_for_timeout(5000)
+    # NEXT BUTTON
 
-    # Password
-    pw_ok = False
+    clicked = False
 
-    for sel in [
-        "input[type='password']",
-        "input[name='password']",
-    ]:
-        try:
-            el = page.locator(sel).first
-
-            el.wait_for(state="visible", timeout=15000)
-
-            el.fill(PASSWORD)
-
-            pw_ok = True
-
-            print("[✓] Password entered")
-
-            break
-
-        except:
-            continue
-
-    if not pw_ok:
-        save_screenshot(page, "password_not_found")
-        raise RuntimeError("Password field not found")
-
-    # Login button
-    for name in ["Login", "Log in", "Sign in", "Continue", "Next"]:
+    for name in ["Next", "Continue", "Login", "Log in"]:
         try:
             page.get_by_role("button", name=name).click(timeout=5000)
+
             print(f"[✓] Clicked {name}")
+
+            clicked = True
+
             break
-        except:
+
+        except Exception:
+            continue
+
+    if not clicked:
+        save_debug(page, "next_button_missing")
+        raise RuntimeError("Next/Login button not found")
+
+    # WAIT FOR PASSWORD SCREEN
+
+    print("[*] Waiting for password field")
+
+    page.wait_for_load_state("networkidle")
+
+    page.wait_for_timeout(8000)
+
+    password_input = wait_for_password(page)
+
+    if not password_input:
+        save_debug(page, "password_not_found")
+        raise RuntimeError("Password field not found")
+
+    password_input.click()
+
+    password_input.fill(PASSWORD)
+
+    print("[✓] Password entered")
+
+    page.wait_for_timeout(1000)
+
+    # LOGIN BUTTON
+
+    for name in ["Login", "Log in", "Sign in", "Next"]:
+        try:
+            page.get_by_role("button", name=name).click(timeout=5000)
+
+            print(f"[✓] Clicked {name}")
+
+            break
+
+        except Exception:
             continue
 
     page.wait_for_timeout(5000)
 
     # OTP
+
     code = get_totp(SECRET)
 
-    print(f"[*] OTP: {code}")
+    print(f"[*] TOTP: {code}")
 
     otp_ok = False
 
@@ -285,20 +272,20 @@ def login(page):
 
         if inputs.count() >= 6:
 
-            for i, digit in enumerate(code):
-                inputs.nth(i).fill(digit)
+            for i, d in enumerate(code):
+                inputs.nth(i).fill(d)
 
             otp_ok = True
 
-    except:
+    except Exception:
         pass
 
     if not otp_ok:
 
         for sel in [
             "input[autocomplete='one-time-code']",
-            "input[maxlength='6']",
             "input[inputmode='numeric']",
+            "input[maxlength='6']",
         ]:
             try:
                 page.locator(sel).first.fill(code)
@@ -307,67 +294,34 @@ def login(page):
 
                 break
 
-            except:
+            except Exception:
                 continue
 
     if not otp_ok:
-        save_screenshot(page, "otp_not_found")
+        save_debug(page, "otp_not_found")
         raise RuntimeError("OTP field not found")
 
     print("[✓] OTP entered")
+
+    # VERIFY
 
     for name in ["Verify", "Submit", "Confirm", "Next"]:
         try:
             page.get_by_role("button", name=name).click(timeout=5000)
             break
-        except:
+        except Exception:
             continue
 
     page.wait_for_timeout(10000)
 
-    save_screenshot(page, "after_login")
+    save_debug(page, "after_login")
 
-    print("[✓] Login flow completed")
+    print(f"[*] Current URL after login: {page.url}")
 
+    if "dashboard" not in page.url.lower():
+        raise RuntimeError("Dashboard not reached")
 
-# ─────────────────────────────────────────────
-# NAVIGATION
-# ─────────────────────────────────────────────
-
-def navigate(page):
-    print("[*] Navigating")
-
-    keywords = [
-        "Orders",
-        "Spot",
-        "Trade History",
-    ]
-
-    for text in keywords:
-
-        success = False
-
-        for _ in range(3):
-
-            try:
-                page.get_by_text(text, exact=True).first.click(timeout=10000)
-
-                page.wait_for_timeout(3000)
-
-                print(f"[✓] Clicked {text}")
-
-                success = True
-
-                break
-
-            except:
-                continue
-
-        if not success:
-            save_screenshot(page, f"nav_fail_{text}")
-            raise RuntimeError(f"Could not click {text}")
-
-    page.wait_for_timeout(5000)
+    print("[✓] Logged in")
 
 
 # ─────────────────────────────────────────────
@@ -375,71 +329,25 @@ def navigate(page):
 # ─────────────────────────────────────────────
 
 def export_csv(page):
-    print("[*] Exporting CSV")
 
-    today = datetime.now()
+    print("[*] Starting export")
 
-    start = today - timedelta(days=10)
+    page.wait_for_timeout(5000)
 
-    export_ok = False
+    with page.expect_download(timeout=120000) as dl:
 
-    for sel in [
-        "button:has-text('Export')",
-        "div:has-text('Export')",
-        "span:has-text('Export')",
-    ]:
-        try:
-            page.locator(sel).first.click(timeout=10000)
+        page.locator("text=Export").last.click()
 
-            export_ok = True
-
-            print("[✓] Export clicked")
-
-            break
-
-        except:
-            continue
-
-    if not export_ok:
-        save_screenshot(page, "export_missing")
-        raise RuntimeError("Export button not found")
-
-    page.wait_for_timeout(3000)
-
-    with page.expect_download(timeout=120000) as dl_info:
-
-        final_ok = False
-
-        for sel in [
-            "button:has-text('Export')",
-            "button.mui-11wlovc",
-        ]:
-            try:
-                page.locator(sel).last.click(timeout=10000)
-
-                final_ok = True
-
-                print("[✓] Final export clicked")
-
-                break
-
-            except:
-                continue
-
-        if not final_ok:
-            raise RuntimeError("Final export click failed")
-
-    download = dl_info.value
+    download = dl.value
 
     ensure_artifacts()
 
     filename = (
-        f"coinsph_trade_history_"
-        f"{start.strftime('%Y-%m-%d')}_"
-        f"{today.strftime('%Y-%m-%d')}.csv"
+        f"coinsph_"
+        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     )
 
-    local_path = os.path.join("artifacts", filename)
+    local_path = f"artifacts/{filename}"
 
     download.save_as(local_path)
 
@@ -457,24 +365,30 @@ def run():
     with sync_playwright() as p:
 
         browser = p.chromium.launch(
-            headless=False,
-            slow_mo=300,
+
+            headless=True,
+
             args=[
                 "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
                 "--disable-dev-shm-usage",
-                "--disable-web-security",
-                "--start-maximized",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-gpu",
+                "--window-size=1920,1080",
             ],
         )
 
         context = browser.new_context(
+
             viewport={"width": 1920, "height": 1080},
+
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/147.0.0.0 Safari/537.36"
+                "Chrome/136.0.0.0 Safari/537.36"
             ),
+
+            locale="en-US",
         )
 
         page = context.new_page()
@@ -483,24 +397,22 @@ def run():
 
             login(page)
 
-            navigate(page)
-
-            csv_file = export_csv(page)
+            local_file = export_csv(page)
 
             s3_key = (
                 f"{S3_PREFIX}/"
-                f"{os.path.basename(csv_file)}"
+                f"{os.path.basename(local_file)}"
             )
 
-            upload_to_s3(csv_file, s3_key)
+            upload_to_s3(local_file, s3_key)
 
-            print("\n[✓] COMPLETED SUCCESSFULLY")
+            print("\n[✓] SUCCESS")
 
         except Exception as e:
 
             print(f"\n[x] FLOW FAILED: {e}")
 
-            save_screenshot(page, "fatal_error")
+            save_debug(page, "fatal_error")
 
             raise
 
@@ -509,7 +421,7 @@ def run():
 
 
 # ─────────────────────────────────────────────
-# RETRY
+# RETRY WRAPPER
 # ─────────────────────────────────────────────
 
 def run_with_retry():
