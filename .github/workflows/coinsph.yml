@@ -2,8 +2,6 @@ name: CoinsPH FX Export
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "30 1 * * 1-5"   # 9:30 AM Singapore / Manila time approx
 
 jobs:
   export:
@@ -20,33 +18,24 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
 
           pip install \
             playwright \
-            boto3 \
-            botocore
+            boto3
 
-      - name: Install Playwright Chromium
+      - name: Install Playwright browser
         run: |
           playwright install chromium
 
-      - name: Debug repo files
+      - name: Debug repository
         run: |
-          echo "Current directory:"
           pwd
-
-          echo ""
-          echo "Repository structure:"
           find .
 
-      - name: Run CoinsPH automation
+      - name: Run automation
         env:
           COINSPH_EMAIL: ${{ secrets.COINSPH_EMAIL }}
           COINSPH_PASSWORD: ${{ secrets.COINSPH_PASSWORD }}
@@ -62,16 +51,15 @@ jobs:
         run: |
           xvfb-run -a python coinsph.py
 
+      - name: Debug artifacts
+        if: always()
+        run: |
+          echo "Artifacts:"
+          find artifacts || true
+
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coinsph-screenshots
-          path: .tmp/
-
-      - name: Upload CSV files
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coinsph-csv
-          path: .tmp/*.csv
+          name: coinsph-artifacts
+          path: artifacts/
