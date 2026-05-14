@@ -53,10 +53,11 @@ if missing:
 
 
 # ─────────────────────────────────────────────────────────────
-# DEBUG HELPERS
+# DEBUG
 # ─────────────────────────────────────────────────────────────
 
 def save_debug(page, tag):
+
     try:
         os.makedirs("artifacts", exist_ok=True)
 
@@ -82,6 +83,7 @@ def save_debug(page, tag):
 # ─────────────────────────────────────────────────────────────
 
 def get_totp(secret):
+
     pad = len(secret) % 8
 
     if pad:
@@ -137,15 +139,34 @@ def login(page):
         timeout=120000,
     )
 
-    page.wait_for_timeout(8000)
+    try:
+        page.wait_for_load_state("networkidle", timeout=30000)
+    except:
+        pass
+
+    page.wait_for_timeout(5000)
+
+    print("[*] Waiting for React hydration")
+
+    try:
+        page.wait_for_function(
+            """
+            () => {
+                return document.querySelectorAll('input').length > 0
+            }
+            """,
+            timeout=30000
+        )
+    except:
+        pass
 
     save_debug(page, "login_page")
 
     print(f"[*] Current URL: {page.url}")
 
-    # --------------------------------------------------------
+    # ─────────────────────────────────────────────────────────
     # COOKIE / POPUPS
-    # --------------------------------------------------------
+    # ─────────────────────────────────────────────────────────
 
     for txt in [
         "Accept",
@@ -154,9 +175,10 @@ def login(page):
         "Continue",
         "I Accept",
         "Got it",
+        "Accept All",
     ]:
         try:
-            page.get_by_role("button", name=txt).click(timeout=2000)
+            page.get_by_role("button", name=txt).click(timeout=3000)
 
             print(f"[✓] Popup clicked: {txt}")
 
@@ -165,11 +187,9 @@ def login(page):
         except:
             pass
 
-    # --------------------------------------------------------
+    # ─────────────────────────────────────────────────────────
     # EMAIL TAB
-    # --------------------------------------------------------
-
-    email_tab_clicked = False
+    # ─────────────────────────────────────────────────────────
 
     for sel in [
         "button:has-text('Email')",
@@ -182,58 +202,72 @@ def login(page):
 
             print(f"[✓] Email tab clicked via {sel}")
 
-            email_tab_clicked = True
-
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(2000)
 
             break
 
         except:
             continue
 
-    if not email_tab_clicked:
-        print("[!] Email tab not found")
-
-    # --------------------------------------------------------
+    # ─────────────────────────────────────────────────────────
     # EMAIL FIELD
-    # --------------------------------------------------------
-
-    email_selectors = [
-        "input[type='email']",
-        "input[name='email']",
-        "input[placeholder*='Email']",
-        "input[autocomplete='username']",
-        "input[type='text']",
-    ]
+    # ─────────────────────────────────────────────────────────
 
     email_found = False
 
-    for sel in email_selectors:
+    for i in range(3):
+
+        print(f"[*] Email search attempt {i+1}/3")
 
         try:
-            el = page.locator(sel).first
 
-            el.wait_for(state="visible", timeout=15000)
+            page.wait_for_timeout(3000)
 
-            el.scroll_into_view_if_needed()
+            inputs = page.locator("input")
 
-            el.click()
+            count = inputs.count()
 
-            el.fill(EMAIL)
+            print(f"[*] Total inputs found: {count}")
 
-            print(f"[✓] Email entered using {sel}")
+            for n in range(count):
 
-            email_found = True
+                try:
 
-            break
+                    el = inputs.nth(n)
+
+                    typ = el.get_attribute("type")
+                    name = el.get_attribute("name")
+                    placeholder = el.get_attribute("placeholder")
+
+                    print(
+                        f"[*] Input {n}: "
+                        f"type={typ} "
+                        f"name={name} "
+                        f"placeholder={placeholder}"
+                    )
+
+                    if typ in ["email", "text", None]:
+
+                        el.click(timeout=2000)
+
+                        el.fill(EMAIL)
+
+                        print(f"[✓] Email entered in input #{n}")
+
+                        email_found = True
+
+                        break
+
+                except Exception as e:
+                    print(f"[!] Input scan failed: {e}")
+
+            if email_found:
+                break
 
         except Exception as e:
-            print(f"[!] Email selector failed {sel}: {e}")
+            print(f"[!] Email attempt failed: {e}")
 
-    # --------------------------------------------------------
-    # IFRAMES
-    # --------------------------------------------------------
-
+    # iframe fallback
     if not email_found:
 
         print("[*] Trying iframe search")
@@ -241,19 +275,31 @@ def login(page):
         for frame in page.frames:
 
             try:
-                for sel in email_selectors:
 
-                    el = frame.locator(sel).first
+                inputs = frame.locator("input")
 
-                    if el.count() > 0:
+                count = inputs.count()
 
-                        el.fill(EMAIL)
+                for n in range(count):
 
-                        print(f"[✓] Email filled inside iframe")
+                    try:
 
-                        email_found = True
+                        el = inputs.nth(n)
 
-                        break
+                        typ = el.get_attribute("type")
+
+                        if typ in ["email", "text", None]:
+
+                            el.fill(EMAIL)
+
+                            print("[✓] Email filled inside iframe")
+
+                            email_found = True
+
+                            break
+
+                    except:
+                        continue
 
                 if email_found:
                     break
@@ -271,9 +317,11 @@ def login(page):
 
     save_debug(page, "after_email")
 
-    # --------------------------------------------------------
+    # ─────────────────────────────────────────────────────────
     # NEXT BUTTON
-    # --------------------------------------------------------
+    # ─────────────────────────────────────────────────────────
+
+    next_clicked = False
 
     for txt in [
         "Next",
@@ -282,45 +330,67 @@ def login(page):
         "Log in",
     ]:
         try:
+
             page.get_by_role("button", name=txt).click(timeout=5000)
 
             print(f"[✓] Clicked {txt}")
+
+            next_clicked = True
 
             break
 
         except:
             continue
 
+    if not next_clicked:
+        page.keyboard.press("Enter")
+
     page.wait_for_timeout(5000)
 
-    # --------------------------------------------------------
+    # ─────────────────────────────────────────────────────────
     # PASSWORD FIELD
-    # --------------------------------------------------------
+    # ─────────────────────────────────────────────────────────
 
     pw_found = False
 
-    for sel in [
-        "input[type='password']",
-        "input[name='password']",
-        "input[autocomplete='current-password']",
-    ]:
+    for i in range(3):
+
         try:
-            el = page.locator(sel).first
 
-            el.wait_for(state="visible", timeout=15000)
+            page.wait_for_timeout(2000)
 
-            el.click()
+            pw_inputs = page.locator("input[type='password']")
 
-            el.fill(PASSWORD)
+            count = pw_inputs.count()
 
-            print(f"[✓] Password entered using {sel}")
+            print(f"[*] Password inputs found: {count}")
 
-            pw_found = True
+            for n in range(count):
 
-            break
+                try:
+
+                    el = pw_inputs.nth(n)
+
+                    el.wait_for(state="visible", timeout=10000)
+
+                    el.click()
+
+                    el.fill(PASSWORD)
+
+                    print(f"[✓] Password entered in field #{n}")
+
+                    pw_found = True
+
+                    break
+
+                except Exception as e:
+                    print(f"[!] Password field failed: {e}")
+
+            if pw_found:
+                break
 
         except Exception as e:
-            print(f"[!] Password selector failed {sel}: {e}")
+            print(f"[!] Password search failed: {e}")
 
     if not pw_found:
 
@@ -330,9 +400,11 @@ def login(page):
 
     page.wait_for_timeout(2000)
 
-    # --------------------------------------------------------
+    # ─────────────────────────────────────────────────────────
     # LOGIN BUTTON
-    # --------------------------------------------------------
+    # ─────────────────────────────────────────────────────────
+
+    login_clicked = False
 
     for txt in [
         "Login",
@@ -341,22 +413,28 @@ def login(page):
         "Next",
     ]:
         try:
+
             page.get_by_role("button", name=txt).click(timeout=5000)
 
             print(f"[✓] Clicked {txt}")
+
+            login_clicked = True
 
             break
 
         except:
             continue
 
+    if not login_clicked:
+        page.keyboard.press("Enter")
+
     page.wait_for_timeout(8000)
 
     save_debug(page, "after_password")
 
-    # --------------------------------------------------------
+    # ─────────────────────────────────────────────────────────
     # OTP
-    # --------------------------------------------------------
+    # ─────────────────────────────────────────────────────────
 
     code = get_totp(SECRET)
 
@@ -365,6 +443,7 @@ def login(page):
     otp_ok = False
 
     try:
+
         inputs = page.locator("input[maxlength='1']")
 
         if inputs.count() >= 6:
@@ -386,6 +465,7 @@ def login(page):
             "input[maxlength='6']",
         ]:
             try:
+
                 page.locator(sel).first.fill(code)
 
                 otp_ok = True
@@ -410,6 +490,7 @@ def login(page):
         "Next",
     ]:
         try:
+
             page.get_by_role("button", name=txt).click(timeout=5000)
 
             print(f"[✓] Clicked {txt}")
@@ -438,9 +519,7 @@ def export_csv(page):
 
     start = today - timedelta(days=10)
 
-    # --------------------------------------------------------
-    # NAVIGATION
-    # --------------------------------------------------------
+    # navigation
 
     for txt in [
         "Orders",
@@ -453,7 +532,8 @@ def export_csv(page):
         for _ in range(3):
 
             try:
-                page.get_by_text(txt, exact=True).first.click(timeout=8000)
+
+                page.get_by_text(txt, exact=True).first.click(timeout=10000)
 
                 print(f"[✓] Clicked {txt}")
 
@@ -472,9 +552,7 @@ def export_csv(page):
 
             raise RuntimeError(f"Could not click {txt}")
 
-    # --------------------------------------------------------
-    # EXPORT BUTTON
-    # --------------------------------------------------------
+    # export
 
     export_clicked = False
 
@@ -484,7 +562,8 @@ def export_csv(page):
         "span:has-text('Export')",
     ]:
         try:
-            page.locator(sel).first.click(timeout=8000)
+
+            page.locator(sel).first.click(timeout=10000)
 
             print("[✓] Export clicked")
 
@@ -503,9 +582,7 @@ def export_csv(page):
 
     page.wait_for_timeout(3000)
 
-    # --------------------------------------------------------
-    # CUSTOMIZE
-    # --------------------------------------------------------
+    # customize
 
     customize_clicked = False
 
@@ -514,7 +591,8 @@ def export_csv(page):
         "div:has-text('Customize')",
     ]:
         try:
-            page.locator(sel).first.click(timeout=8000)
+
+            page.locator(sel).first.click(timeout=10000)
 
             print("[✓] Customize clicked")
 
@@ -533,9 +611,7 @@ def export_csv(page):
 
     page.wait_for_timeout(3000)
 
-    # --------------------------------------------------------
-    # FINAL EXPORT
-    # --------------------------------------------------------
+    # final export
 
     with page.expect_download(timeout=120000) as dl_info:
 
@@ -546,7 +622,8 @@ def export_csv(page):
             "button.mui-11wlovc",
         ]:
             try:
-                page.locator(sel).last.click(timeout=8000)
+
+                page.locator(sel).last.click(timeout=10000)
 
                 print("[✓] Final export clicked")
 
@@ -591,20 +668,40 @@ def run():
     with sync_playwright() as p:
 
         browser = p.chromium.launch(
-            headless=False,
-            slow_mo=100,
+            headless=True,
+            slow_mo=50,
+            channel="chromium",
             args=[
-                "--start-maximized",
                 "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-gpu",
+                "--window-size=1920,1080",
+                "--start-maximized",
             ],
         )
 
         context = browser.new_context(
-            viewport=None,
+            viewport={"width": 1920, "height": 1080},
             ignore_https_errors=True,
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/147.0.0.0 Safari/537.36"
+            ),
+            locale="en-US",
+            timezone_id="Asia/Manila",
+            java_script_enabled=True,
+            bypass_csp=True,
+            accept_downloads=True,
         )
 
         page = context.new_page()
+
+        page.set_default_timeout(30000)
+
+        page.set_default_navigation_timeout(120000)
 
         try:
 
